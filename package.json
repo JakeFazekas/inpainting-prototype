@@ -1,0 +1,9 @@
+{
+  "name": "inpainting-prototype",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MaskForge — local dev server + front-end for the Magic Story inpainting prototype.",
+  "scripts": {
+    "start": "node server.js"
+  }
+}
