@@ -41,6 +41,41 @@ function sendJson(res, code, obj) {
   res.end(JSON.stringify(obj));
 }
 
+function readBody(req, cb) {
+  const chunks = []; let size = 0; const MAX = 30 * 1024 * 1024; // 30 MB cap
+  req.on('data', function (c) { size += c.length; if (size > MAX) { req.destroy(); return; } chunks.push(c); });
+  req.on('end', function () { cb(Buffer.concat(chunks)); });
+}
+
+// Build a subject cutout (transparent background) with a free, local model.
+// No Higgsfield needed for this — it runs right here on your machine.
+function handleMask(req, res) {
+  readBody(req, async function (body) {
+    try {
+      const parsed = JSON.parse(body.toString('utf8'));
+      const image = parsed && parsed.image;
+      if (!image) return sendJson(res, 400, { error: 'no_image' });
+      const m = String(image).match(/^data:([^;]+);base64,(.*)$/);
+      const mime = m ? m[1] : 'image/png';
+      const inBuf = Buffer.from(m ? m[2] : String(image).split(',').pop(), 'base64');
+
+      let removeBackground;
+      try { removeBackground = require('@imgly/background-removal-node').removeBackground; }
+      catch (e) { return sendJson(res, 500, { error: 'dependency_missing', note: 'Run:  npm install @imgly/background-removal-node' }); }
+
+      console.log('  [mask] removing background... (first run downloads the model, ~1 min)');
+      const inputBlob = new Blob([inBuf], { type: mime }); // typed Blob so the library detects the format
+      const outBlob = await removeBackground(inputBlob);
+      const outBuf = Buffer.from(await outBlob.arrayBuffer());
+      console.log('  [mask] done.');
+      return sendJson(res, 200, { cutout: 'data:image/png;base64,' + outBuf.toString('base64') });
+    } catch (e) {
+      console.error('  [mask] error:', e);
+      return sendJson(res, 500, { error: 'mask_failed', message: String((e && e.message) || e) });
+    }
+  });
+}
+
 const server = http.createServer(function (req, res) {
   const url = req.url.split('?')[0];
 
@@ -49,9 +84,10 @@ const server = http.createServer(function (req, res) {
     if (url === '/api/health') {
       return sendJson(res, 200, { ok: true, keyConfigured: HAS_KEY });
     }
-    // These get wired to Higgsfield next — placeholders for now.
-    if (url === '/api/mask' || url === '/api/generate') {
-      return sendJson(res, 501, { error: 'not_implemented', note: 'We wire this to Higgsfield in the next step.' });
+    if (url === '/api/mask' && req.method === 'POST') { return handleMask(req, res); }
+    // Generation is on hold until we confirm Higgsfield API access.
+    if (url === '/api/generate') {
+      return sendJson(res, 501, { error: 'not_implemented', note: 'Generation is pending Higgsfield API access.' });
     }
     return sendJson(res, 404, { error: 'unknown_endpoint' });
   }

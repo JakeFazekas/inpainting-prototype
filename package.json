@@ -5,5 +5,8 @@
   "description": "MaskForge — local dev server + front-end for the Magic Story inpainting prototype.",
   "scripts": {
     "start": "node server.js"
+  },
+  "dependencies": {
+    "@imgly/background-removal-node": "^1.4.5"
   }
 }

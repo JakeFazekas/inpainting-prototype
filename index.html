@@ -209,7 +209,7 @@
             <div class="imgbox"><canvas id="maskCanvas" width="480" height="320"></canvas></div>
           </figure>
         </div>
-        <p class="note">Black = kept (the character stays), white = repaint zone. Real mask generation wires in behind the scenes later — for now this is a placeholder so you can walk the flow. <button class="chip" id="regenMask" style="margin-left:6px">↻ Regenerate</button></p>
+        <p class="note">Black = kept (the character stays), white = repaint zone. When the server is running this is built automatically from your image by a background-removal model; opened without the server, it falls back to a placeholder. <button class="chip" id="regenMask" style="margin-left:6px">↻ Regenerate</button></p>
       </div>
     </div>
 
@@ -308,7 +308,7 @@
   ];
   var sugIdx = 0;
 
-  var state = { mode:null, flow:[], idx:0, base:null, maskDone:false, avFull:null, avHalf:null, prompt:'', res:'2k' };
+  var state = { mode:null, flow:[], idx:0, base:null, cutout:null, maskReal:false, maskDone:false, avFull:null, avHalf:null, prompt:'', res:'2k' };
   var $ = function(s,r){return (r||document).querySelector(s)};
   var panels = {};
   document.querySelectorAll('.panel[data-step]').forEach(function(p){ panels[p.dataset.step]=p; });
@@ -325,7 +325,7 @@
     buildStepper(); show();
   }
   function reset(){
-    state = { mode:null, flow:[], idx:0, base:null, maskDone:false, avFull:null, avHalf:null, prompt:'', res:'2k' };
+    state = { mode:null, flow:[], idx:0, base:null, cutout:null, maskReal:false, maskDone:false, avFull:null, avHalf:null, prompt:'', res:'2k' };
     setDrop('#baseDrop', null,'Base image'); setDrop('#avFullDrop', null,'Full body'); setDrop('#avHalfDrop', null,'Face');
     $('#promptText').value='';
     resetGenerate();
@@ -401,38 +401,55 @@
     if(!img){ img=document.createElement('img'); drop.appendChild(img); }
     img.src=url;
   }
-  wireDrop('#baseDrop','#baseInput', function(url){ state.base=url; state.maskDone=false; setDrop('#baseDrop',url,'Base image'); });
+  (function(){
+    var drop=$('#baseDrop'), input=$('#baseInput');
+    drop.addEventListener('click', function(){ input.click(); });
+    input.addEventListener('change', function(){
+      var f=input.files&&input.files[0]; if(!f) return;
+      var reader=new FileReader();
+      reader.onload=function(){ state.base=reader.result; state.maskDone=false; state.cutout=null; setDrop('#baseDrop', state.base, 'Base image'); updateNext(); };
+      reader.readAsDataURL(f); // dataURL so we can both preview AND send it to the server
+    });
+  })();
   wireDrop('#avFullDrop','#avFullInput', function(url){ state.avFull=url; setDrop('#avFullDrop',url,'Full body'); });
   wireDrop('#avHalfDrop','#avHalfInput', function(url){ state.avHalf=url; setDrop('#avHalfDrop',url,'Face'); });
 
   /* ---- mask simulation ---- */
   function runMask(){
     $('#maskLoading').classList.remove('hidden'); $('#maskCompare').classList.add('hidden'); updateNext();
-    setTimeout(function(){ state.maskDone=true; showMaskCompare(); updateNext(); }, 1900);
+    fetch('/api/mask', { method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({ image: state.base }) })
+      .then(function(r){ if(!r.ok) throw new Error('status '+r.status); return r.json(); })
+      .then(function(d){ state.cutout=d.cutout; state.maskReal=true; state.maskDone=true; showMaskCompare(); updateNext(); })
+      .catch(function(e){ console.warn('mask API unavailable, showing placeholder:', e.message); state.cutout=null; state.maskReal=false; state.maskDone=true; showMaskCompare(); updateNext(); });
   }
   function showMaskCompare(){
     $('#maskLoading').classList.add('hidden'); $('#maskCompare').classList.remove('hidden');
     $('#maskBaseImg').src = state.base;
+    var badge = document.querySelector('#maskCompare figure:last-child .badge');
+    if (badge) badge.textContent = state.maskReal ? 'auto' : 'placeholder';
     drawMask();
   }
   function drawMask(){
     var cv=$('#maskCanvas'), ctx=cv.getContext('2d');
+    var repaint = (state.mode === 'background'); // repaint: white = background; swap: white = the child
     var img=new Image();
     img.onload=function(){
       var W=cv.width,H=cv.height; ctx.fillStyle='#000'; ctx.fillRect(0,0,W,H);
       var r=Math.min(W/img.width,H/img.height), w=img.width*r, h=img.height*r, ox=(W-w)/2, oy=(H-h)/2;
       var off=document.createElement('canvas'); off.width=W; off.height=H;
       var octx=off.getContext('2d'); octx.drawImage(img,ox,oy,w,h);
-      var d=octx.getImageData(0,0,W,H), a=d.data;
+      var a=octx.getImageData(0,0,W,H).data;
       var out=ctx.createImageData(W,H), o=out.data;
       for(var i=0;i<a.length;i+=4){
-        var lum=0.299*a[i]+0.587*a[i+1]+0.114*a[i+2];
-        var on = (a[i+3]>10 && lum>40 && lum<205);
+        var on;
+        if (state.maskReal) { on = a[i+3] > 50; }                 // real: the cutout's alpha marks the subject
+        else { var lum=0.299*a[i]+0.587*a[i+1]+0.114*a[i+2]; on = (a[i+3]>10 && lum>40 && lum<205); } // placeholder
+        if (repaint) on = !on;
         var v = on?255:0; o[i]=o[i+1]=o[i+2]=v; o[i+3]=255;
       }
       ctx.putImageData(out,0,0);
     };
-    img.src=state.base;
+    img.src = state.maskReal ? state.cutout : state.base;
   }
   $('#regenMask').addEventListener('click', function(){ state.maskDone=false; runMask(); });
 
